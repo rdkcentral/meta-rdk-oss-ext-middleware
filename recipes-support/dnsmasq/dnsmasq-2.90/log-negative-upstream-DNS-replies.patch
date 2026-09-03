@@ -1,0 +1,88 @@
+From: tukken-comcast <tony_ukken2@comcast.com>
+Date: Wed, 3 Sep 2026 00:00:00 +0000
+Subject: [PATCH] forward: log negative upstream DNS replies for field diagnostics
+
+Log SERVFAIL/REFUSED/other error rcodes and NXDOMAIN replies from upstream
+servers unconditionally (at LOG_WARNING), including the query name, type and
+the responding server address. This lets us diagnose transient DNS resolution
+failures in the field without enabling the very verbose log-queries option.
+
+When log-queries is enabled these replies are already logged by log_query(),
+so the extra logging is skipped to avoid duplicate lines.
+
+Upstream-Status: Inappropriate [downstream field diagnostics]
+Signed-off-by: tukken-comcast <tony_ukken2@comcast.com>
+---
+diff --git a/src/forward.c b/src/forward.c
+index 32f37e4..cb20137 100644
+--- a/src/forward.c
++++ b/src/forward.c
+@@ -682,6 +682,48 @@ static struct ipsets *domain_find_sets(struct ipsets *setlist, const char *domai
+   return ret;
+ }
+ 
++/* Log negative/failing upstream replies (SERVFAIL, REFUSED, other error
++   rcodes and NXDOMAIN) unconditionally, so transient field resolution
++   failures can be diagnosed without enabling verbose log-queries. When
++   log-queries is on these are already logged by log_query(), so skip here
++   to avoid duplicate lines. */
++static void log_negative_reply(struct dns_header *header, size_t n,
++			       struct server *server, unsigned int rcode)
++{
++  char numbuf[16];
++  const char *reason;
++  unsigned short type = 0;
++
++  if (rcode == NOERROR || option_bool(OPT_LOG))
++    return;
++
++  switch (rcode)
++    {
++    case NXDOMAIN: reason = "NXDOMAIN"; break;
++    case SERVFAIL: reason = "SERVFAIL"; break;
++    case REFUSED:  reason = "REFUSED";  break;
++    case NOTIMP:   reason = "NOTIMP";   break;
++    default:
++      snprintf(numbuf, sizeof(numbuf), "rcode=%u", rcode);
++      reason = numbuf;
++      break;
++    }
++
++  extract_request(header, n, daemon->namebuff, &type);
++  if (daemon->namebuff[0] == 0)
++    strcpy(daemon->namebuff, ".");
++
++  if (server)
++    {
++      (void)prettyprint_addr(&server->addr, daemon->addrbuff);
++      my_syslog(LOG_WARNING, _("neg-reply %s %s/%u %s"),
++		reason, daemon->namebuff, type, daemon->addrbuff);
++    }
++  else
++    my_syslog(LOG_WARNING, _("neg-reply %s %s/%u"),
++	      reason, daemon->namebuff, type);
++}
++
+ static size_t process_reply(struct dns_header *header, time_t now, struct server *server, size_t n, int check_rebind, 
+ 			    int no_cache, int cache_secure, int bogusanswer, int ad_reqd, int do_bit, int added_pheader, 
+ 			    union mysockaddr *query_source, unsigned char *limit, int ede)
+@@ -768,6 +810,7 @@ static size_t process_reply(struct dns_header *header, time_t now, struct server
+       a.log.rcode = rcode;
+       a.log.ede = ede;
+       log_query(F_UPSTREAM | F_RCODE, "error", &a, NULL, 0);
++      log_negative_reply(header, n, server, rcode);
+       
+       return resize_packet(header, n, pheader, plen);
+     }
+@@ -884,7 +927,10 @@ static size_t process_reply(struct dns_header *header, time_t now, struct server
+     }
+ 
+   if (RCODE(header) == NXDOMAIN)
+-    server->nxdomain_replies++;
++    {
++      server->nxdomain_replies++;
++      log_negative_reply(header, n, server, NXDOMAIN);
++    }
+ 
+   return n;
+ }
