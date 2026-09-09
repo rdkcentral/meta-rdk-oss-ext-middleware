@@ -2,33 +2,38 @@ From: tukken-comcast <tony_ukken2@comcast.com>
 Date: Tue, 9 Sep 2026 00:00:00 +0000
 Subject: [PATCH] cache: log negative upstream DNS replies for field diagnostics
 
-Log NXDOMAIN/NODATA and SERVFAIL/REFUSED (and other error rcode) replies from
+Log NXDOMAIN and SERVFAIL/REFUSED (and other error rcode) replies from
 upstream servers even when log-queries is disabled, so transient DNS resolution
 failures in the field can be diagnosed without the full query-logging flood.
 
 This reuses the existing log_query() path: the early !log-queries return is
-skipped only for replies carrying F_UPSTREAM together with F_NEG or F_RCODE.
-Cached and locally-generated negatives lack F_UPSTREAM and are not logged, so
-repeat lookups do not flood the log. The responding upstream server address is
-not included (log_query has no access to it at this point).
+skipped only for replies carrying F_UPSTREAM together with F_NXDOMAIN or
+F_RCODE. Gating on F_NXDOMAIN rather than F_NEG deliberately excludes benign
+NODATA replies (e.g. NODATA-IPv6 for a v4-only host), which also carry F_NEG
+and would otherwise flood the log. Cached and locally-generated negatives lack
+F_UPSTREAM and are not logged, so repeat lookups do not flood the log. The
+responding upstream server address is not included (log_query has no access to
+it at this point).
 
 Upstream-Status: Inappropriate [downstream field diagnostics]
 Signed-off-by: tukken-comcast <tony_ukken2@comcast.com>
 ---
 diff --git a/src/cache.c b/src/cache.c
-index 0eacec9..1f6c44d 100644
+index 0eacec9..4a2e96c 100644
 --- a/src/cache.c
 +++ b/src/cache.c
-@@ -2100,7 +2100,11 @@ void log_query(unsigned int flags, char *name, union all_addr *addr, char *arg,
+@@ -2100,7 +2100,13 @@ void log_query(unsigned int flags, char *name, union all_addr *addr, char *arg,
    char *gap = " ";
    char portstring[7]; /* space for #<portnum> */
    
 -  if (!option_bool(OPT_LOG))
-+  /* Log negative upstream replies (NXDOMAIN/NODATA and SERVFAIL/REFUSED etc.)
-+     even when query logging is disabled, to diagnose transient field failures.
++  /* Log negative upstream replies (NXDOMAIN and SERVFAIL/REFUSED etc.) even
++     when query logging is disabled, to diagnose transient field failures.
++     Gate on F_NXDOMAIN not F_NEG: benign NODATA (e.g. NODATA-IPv6 for a
++     v4-only host) also carries F_NEG and would otherwise flood the log.
 +     Cached and locally-generated negatives lack F_UPSTREAM, so are not logged. */
 +  if (!option_bool(OPT_LOG) &&
-+      !((flags & F_UPSTREAM) && (flags & (F_NEG | F_RCODE))))
++      !((flags & F_UPSTREAM) && (flags & (F_NXDOMAIN | F_RCODE))))
      return;
  
    /* build query type string if requested */
