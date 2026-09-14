@@ -3,6 +3,7 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/${BPN}:"
 SRC_URI:append = " \
     file://dnsmasq-no-negcache.conf \
 "
+DEPENDS:append = " unbound"
 
 do_install:append() {
     install -d ${D}${sysconfdir}
