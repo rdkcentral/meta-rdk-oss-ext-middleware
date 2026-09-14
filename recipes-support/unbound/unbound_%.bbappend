@@ -13,8 +13,8 @@ SRC_URI += " \
 
 SYSTEMD_SERVICE:${PN} = "unbound.service"
 
-# Phase 1: manual start only, do not auto-enable at boot
-SYSTEMD_AUTO_ENABLE = "disable"
+
+SYSTEMD_AUTO_ENABLE = "disable;
 
 do_install:append() {
     install -d ${D}${sysconfdir}/unbound
