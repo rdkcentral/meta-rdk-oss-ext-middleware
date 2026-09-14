@@ -1,0 +1,19 @@
+[Unit]
+Description=Unbound validating, caching DNS resolver (RDK-V DNS failover POC)
+Documentation=man:unbound(8)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+RuntimeDirectory=unbound
+RuntimeDirectoryMode=0755
+
+ExecStartPre=/usr/sbin/unbound-checkconf /etc/unbound/unbound.conf
+ExecStart=/usr/sbin/unbound -d -c /etc/unbound/unbound.conf
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
