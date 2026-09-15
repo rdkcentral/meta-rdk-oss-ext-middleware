@@ -13,8 +13,7 @@ SRC_URI += " \
 
 SYSTEMD_SERVICE:${PN} = "unbound.service"
 
-
-SYSTEMD_AUTO_ENABLE = "disable;
+SYSTEMD_AUTO_ENABLE = "disable"
 
 do_install:append() {
     install -d ${D}${sysconfdir}/unbound
