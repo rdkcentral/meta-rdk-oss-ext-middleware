@@ -15,10 +15,6 @@ SYSTEMD_SERVICE:${PN} = "unbound.service"
 
 SYSTEMD_AUTO_ENABLE = "disable"
 
-# Only the sysvinit script needs daemonize; we run under systemd (Type=simple),
-# and lib32-daemonize has no provider, which breaks multilib builds.
-RDEPENDS:${PN}:remove = "daemonize"
-
 do_install:append() {
     install -d ${D}${sysconfdir}/unbound
     install -m 0644 ${WORKDIR}/unbound.conf ${D}${sysconfdir}/unbound/unbound.conf
