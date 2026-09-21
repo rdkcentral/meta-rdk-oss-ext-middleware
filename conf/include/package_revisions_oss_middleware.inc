@@ -9,3 +9,9 @@ PACKAGE_ARCH:pn-unbound ?= "${OSS_LAYER_ARCH}"
 
 PR:pn-daemonize ?= "r0"
 PACKAGE_ARCH:pn-daemonize ?= "${OSS_LAYER_ARCH}"
+
+PR:pn-dns-conntrack-failover ?= "r0"
+PACKAGE_ARCH:pn-dns-conntrack-failover ?= "${OSS_LAYER_ARCH}"
+
+PR:pn-libnetfilter-conntrack ?= "r0"
+PACKAGE_ARCH:pn-libnetfilter-conntrack ?= "${OSS_LAYER_ARCH}"

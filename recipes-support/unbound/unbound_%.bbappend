@@ -16,9 +16,9 @@ SYSTEMD_SERVICE:${PN} = "unbound.service"
 SYSTEMD_AUTO_ENABLE = "disable"
 
 SYSLOG-NG_FILTER:append = " unbound"
-SYSLOG-NG_SERVICE_dns_failover = "unbound.service"
-SYSLOG-NG_DESTINATION_dns_failover = "unbound.log"
-SYSLOG-NG_LOGRATE_dns_failover = "low"
+SYSLOG-NG_SERVICE_unbound = "unbound.service"
+SYSLOG-NG_DESTINATION_unbound = "unbound.log"
+SYSLOG-NG_LOGRATE_unbound = "low"
 
 do_install:append() {
     install -d ${D}${sysconfdir}/unbound

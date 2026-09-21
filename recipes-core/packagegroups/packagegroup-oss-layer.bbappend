@@ -3,4 +3,6 @@ RDEPENDS:${PN} += "\
      libnfnetlink \
      unbound \
      tcpdump \
+     dns-conntrack-failover \
+     libnetfilter-conntrack \
 "
