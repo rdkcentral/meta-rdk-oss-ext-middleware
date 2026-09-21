@@ -1,0 +1,13 @@
+[Unit]
+Description=DNS Conntrack Failover Detector
+After=network.target dnsmasq.service
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/dns_conntrack_failover
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

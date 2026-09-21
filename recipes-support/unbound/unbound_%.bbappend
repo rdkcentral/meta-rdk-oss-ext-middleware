@@ -1,4 +1,4 @@
-inherit useradd systemd
+inherit useradd systemd syslog-ng-config-gen logrotate_config
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
@@ -14,6 +14,11 @@ SRC_URI += " \
 SYSTEMD_SERVICE:${PN} = "unbound.service"
 
 SYSTEMD_AUTO_ENABLE = "disable"
+
+SYSLOG-NG_FILTER:append = " unbound"
+SYSLOG-NG_SERVICE_dns_failover = "unbound.service"
+SYSLOG-NG_DESTINATION_dns_failover = "unbound.log"
+SYSLOG-NG_LOGRATE_dns_failover = "low"
 
 do_install:append() {
     install -d ${D}${sysconfdir}/unbound
