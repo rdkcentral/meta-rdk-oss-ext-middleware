@@ -5,7 +5,7 @@ LICENSE = "Apache-2.0"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=06093b681f6d882a55e3bc222a02a988"
 
 SRC_URI = "git://github.com/rdkcentral/test-and-diagnostic.git;protocol=https;branch=topic/RDK-62226"
-SRCREV = "dfc70535fc4f0fca8a36b238b069e6ee179f8e93"
+SRCREV = "bbc90ecd96988e2a62db49b918aefd8f54686efb"
 
 PV = "0.1"
 S = "${WORKDIR}/git"
