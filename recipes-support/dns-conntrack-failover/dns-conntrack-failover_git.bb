@@ -5,13 +5,13 @@ LICENSE = "Apache-2.0"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=06093b681f6d882a55e3bc222a02a988"
 
 SRC_URI = "git://github.com/rdkcentral/test-and-diagnostic.git;protocol=https;branch=topic/RDK-62226"
-SRCREV = "bbc90ecd96988e2a62db49b918aefd8f54686efb"
+SRCREV = "9dd7f37530ae3853c0be72665769d8cc642d685e"
 
 PV = "0.1"
 S = "${WORKDIR}/git"
 
-DEPENDS = "libnetfilter-conntrack libnfnetlink"
-
+DEPENDS = " libnetfilter-conntrack libnfnetlink"
+RDEPENDS = " tcpdump"
 inherit systemd syslog-ng-config-gen logrotate_config
 
 SRC_URI += "file://dns-conntrack-failover.service"
