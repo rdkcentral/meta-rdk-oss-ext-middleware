@@ -11,7 +11,7 @@ PV = "0.1"
 S = "${WORKDIR}/git"
 
 DEPENDS = " libnetfilter-conntrack libnfnetlink"
-RDEPENDS = " tcpdump"
+
 inherit systemd syslog-ng-config-gen logrotate_config
 
 SRC_URI += "file://dns-conntrack-failover.service"
