@@ -5,4 +5,5 @@ RDEPENDS:${PN} += "\
      tcpdump \
      dns-conntrack-failover \
      libnetfilter-conntrack \
+     bind-utils \
 "
