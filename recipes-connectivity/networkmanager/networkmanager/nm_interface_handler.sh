@@ -20,11 +20,10 @@
 
 # nm_interface_handler.sh
 #
-# This script manages Ethernet and Wi-Fi interfaces based on marker files.
+# This script will make Ethernet and Wi-Fi interfaces unmanaged based on marker files.
 # If specific marker files exist, it writes a NetworkManager config drop-in
-# (/run/NetworkManager/conf.d/20-rdk-iface-disable.conf) that sets matching
+# (/run/NetworkManager/conf.d/20-rdk-unmanaged-interfaces.conf) that sets matching
 # interfaces to managed=0 while their marker files exist.
-# This soft setting allows the plugin to re-enable an interface at runtime.
 #
 # Called by ExecStartPre in NetworkManager.service.
 
@@ -48,7 +47,7 @@ NM_WIFI_MARKER="/opt/persistent/wifi.interface.disable"
 WIFI_INTERFACE="$WIFI_INTERFACE"
 
 NM_DROPIN_DIR="/run/NetworkManager/conf.d"
-NM_DROPIN="$NM_DROPIN_DIR/20-rdk-iface-disable.conf"
+NM_DROPIN="$NM_DROPIN_DIR/20-rdk-unmanaged-interfaces.conf"
 
 mkdir -p "$NM_DROPIN_DIR"
 rm -f "$NM_DROPIN"
