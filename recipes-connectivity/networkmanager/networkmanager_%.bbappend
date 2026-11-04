@@ -6,6 +6,8 @@ SRC_URI:append = " \
     file://nm_interface_handler.sh \
 "
 
+EXTRA_OEMESON:append = " -Dmore_asserts=no"
+
 do_install:append() {
     install -d ${D}${sysconfdir}
     install -d ${D}${sysconfdir}/NetworkManager/
