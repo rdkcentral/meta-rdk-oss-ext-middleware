@@ -1,0 +1,17 @@
+[Unit]
+Description=Unbound caching DNS resolver
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+RuntimeDirectory=unbound
+RuntimeDirectoryMode=0755
+
+ExecStartPre=/usr/sbin/unbound-checkconf /etc/unbound/unbound.conf
+ExecStart=/usr/sbin/unbound -d -c /etc/unbound/unbound.conf
+
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
