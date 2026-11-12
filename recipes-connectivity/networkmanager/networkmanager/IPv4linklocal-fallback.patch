@@ -27,7 +27,10 @@ Commit URLs use:
 Backport adaptations:
   - Adapt NEWS and the older nmcli metadata description format.
   - Add a focused settings-verification regression test.
-  - Runtime changes are taken from the upstream commits above.
+  - Inline the upstream platform link-local predicate using 1.43.7 helpers:
+    address in 169.254/16, prefix length 16, and peer equal to address.
+    nm_platform_ip4_address_is_link_local is absent in 1.43.7.
+  - Other runtime changes are taken from the upstream commits above.
 
 Apply in your NetworkManager source tree:
   git apply --check /path/to/0001-nm-1.43.7-native-ipv4ll-fallback.patch
@@ -287,7 +290,7 @@ index 96274ba..17679b3 100644
  
      _L("l3cd %s%s%s(" NM_HASH_OBFUSCATE_PTR_FMT ", ifindex=%d%s%s%s%s)",
         NM_PRINT_FMT_QUOTED(title, "\"", title, "\" ", ""),
-@@ -1283,15 +1284,26 @@ nm_l3_config_data_add_address_full(NML3ConfigData            *self,
+@@ -1283,15 +1284,27 @@ nm_l3_config_data_add_address_full(NML3ConfigData            *self,
                                     const NMPObject          **out_obj_new)
  {
      const NMPObject *new;
@@ -305,7 +308,8 @@ index 96274ba..17679b3 100644
 +        addr = obj_new ? NMP_OBJECT_CAST_IP4_ADDRESS(obj_new)
 +                       : (const NMPlatformIP4Address *) (pl_new);
 +
-+        if (!nm_platform_ip4_address_is_link_local(addr)) {
++        if (!(nm_ip4_addr_is_link_local(addr->address) && addr->plen == 16
++              && addr->address == addr->peer_address)) {
 +            self->flags |= NM_L3_CONFIG_DAT_FLAGS_HAS_IPV4_NON_LL;
 +        }
 +    }
@@ -316,7 +320,7 @@ index 96274ba..17679b3 100644
                                        self->ifindex,
                                        obj_new,
                                        (const NMPlatformObject *) pl_new,
-@@ -2985,14 +2997,12 @@ _init_from_platform(NML3ConfigData           *self,
+@@ -2985,14 +2998,12 @@ _init_from_platform(NML3ConfigData           *self,
          else
              self->has_routes_with_type_local_6_set = FALSE;
          nmp_cache_iter_for_each (&iter, head_entry, &plobj) {
