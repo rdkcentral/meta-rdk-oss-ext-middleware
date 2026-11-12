@@ -1,0 +1,490 @@
+Subject: [PATCH] Backport native IPv4 link-local fallback to 1.43.7-dev
+
+Base: NetworkManager upstream tag 1.43.7-dev
+Base-commit: 2e3fabae50be1429e451c85f32ef9b7011b8feae
+Upstream-Status: Backport
+
+Combine the upstream IPv4LL fallback feature with the address tracking and
+lease-loss handling it depends on. No external avahi-autoipd is needed.
+Existing default/auto/disabled/enabled link-local settings retain their
+meaning. The new fallback value is 4.
+
+Upstream commits (Dominique Martinet and Beniamino Galvani):
+  a80fef9f37c890947f9d4f90965341a1d6cc8516
+    dhcp: remove l3cds when the lease expires
+  b39e38f272e8d60b2c908aba4c1f19ce055c57ba
+    device: set dhcpx state back to pending when lease lost
+  b3d2902ad4339f183d1316f305292062b087a358
+    l3cfg: add new NM_L3_CONFIG_DAT_FLAGS_HAS_IPV4_NON_LL flag
+  c575293f1b08d742e53282a1c2cc1b5cc567436f
+    device: add ipv4.link-local=fallback (IPv4LL set iff no other IPv4 set)
+  abbaa9b62906fbfe87c730eb83476285cb1f18e1
+    libnm, nmcli: fix "Since" version for ipv4.link-local=fallback
+
+Commit URLs use:
+  https://github.com/NetworkManager/NetworkManager/commit/<full-hash>
+
+Backport adaptations:
+  - Adapt NEWS and the older nmcli metadata description format.
+  - Add a focused settings-verification regression test.
+  - Runtime changes are taken from the upstream commits above.
+
+Apply in your NetworkManager source tree:
+  git apply --check /path/to/0001-nm-1.43.7-native-ipv4ll-fallback.patch
+  git apply /path/to/0001-nm-1.43.7-native-ipv4ll-fallback.patch
+
+Rebuild and deploy NetworkManager, libnm and nmcli together using the target
+image's existing build recipe. This patch is checked against the upstream
+base, not against an unavailable vendor-modified source tree.
+
+After disabling the Avahi udev/service integration and stopping existing
+avahi-autoipd processes, configure and reactivate the intended NM profile:
+  nmcli connection modify "<profile>" ipv4.method auto ipv4.link-local fallback
+Reactivation interrupts connectivity; arrange local access first.
+
+Fallback is based on configured addresses, not Internet reachability or
+DHCP-server reachability. It can supply IPv4LL while DHCP is still pending.
+A still-valid DHCP address suppresses IPv4LL. Manually configured non-LL
+addresses suppress it as well.
+
+Validation completed:
+  - git diff --check
+  - git apply --cached --check against the pristine upstream base
+Not completed: Linux compilation, regression test execution, target tests.
+The development host is macOS and has no Linux container runtime available.
+
+Required target validation before production:
+  - Run /core/general/test_setting_ip4_link_local_fallback in test-general.
+  - No DHCP: obtain 169.254/16 and keep DHCP attempting acquisition.
+  - DHCP becomes available: install DHCP address and withdraw IPv4LL.
+  - DHCP lease expires/is NAKed: remove stale lease config and regain IPv4LL.
+  - DHCP reacquisition, including the same address: IPv4LL withdraws again.
+  - Cable unplug/replug and connection down/up: no stale address or LL state.
+  - Static IPv4 present: no fallback LL; IPv4 disabled: no LL.
+  - Existing link-local=enabled behavior still allows simultaneous addresses.
+  - Reapply changes between enabled, fallback and disabled.
+
+---
+diff --git a/NEWS b/NEWS
+index 57bd987..1eff77a 100644
+--- a/NEWS
++++ b/NEWS
+@@ -8,6 +8,8 @@ subject to change and not guaranteed to be compatible with
+ the later release.
+ USE AT YOUR OWN RISK.  NOT RECOMMENDED FOR PRODUCTION USE!
+ 
++* Backport ipv4.link-local=fallback from NetworkManager 1.52: configure an
++  IPv4 link-local address only while no other IPv4 address is configured.
+ * Setting "connection.stable-id=default${CONNECTION}" changed behavior to
+   be identical to the built-in default value when the stable-id is not set.
+ * When configuring hostnames in non-public TLD (like "example.local"), use
+diff --git a/src/core/devices/nm-device.c b/src/core/devices/nm-device.c
+index ed84004..abdc702 100644
+--- a/src/core/devices/nm-device.c
++++ b/src/core/devices/nm-device.c
+@@ -273,6 +273,7 @@ typedef struct {
+             NML3IPv4LL             *ipv4ll;
+             NML3IPv4LLRegistration *ipv4ll_registation;
+             GSource                *timeout_source;
++            NMSettingIP4LinkLocal   mode;
+         } v4;
+         struct {
+             NML3IPv6LL     *ipv6ll;
+@@ -823,6 +824,7 @@ static void _set_mtu(NMDevice *self, guint32 mtu);
+ static void _commit_mtu(NMDevice *self);
+ static void _cancel_activation(NMDevice *self);
+ 
++static void _dev_ipll4_check_fallback(NMDevice *self, const NML3ConfigData *l3cd_new);
+ static void _dev_ipll4_notify_event(NMDevice *self);
+ 
+ static void _dev_ip_state_check(NMDevice *self, int addr_family);
+@@ -1585,6 +1587,7 @@ _prop_get_ipv4_link_local(NMDevice *self)
+ {
+     NMSettingIP4Config   *s_ip4;
+     NMSettingIP4LinkLocal link_local;
++    const char           *method;
+ 
+     s_ip4 = nm_device_get_applied_setting(self, NM_TYPE_SETTING_IP4_CONFIG);
+     if (!s_ip4)
+@@ -1593,6 +1596,8 @@ _prop_get_ipv4_link_local(NMDevice *self)
+     if (NM_IS_DEVICE_LOOPBACK(self))
+         return NM_SETTING_IP4_LL_DISABLED;
+ 
++    method = nm_setting_ip_config_get_method((NMSettingIPConfig *) s_ip4);
++
+     link_local = nm_setting_ip4_config_get_link_local(s_ip4);
+ 
+     if (link_local == NM_SETTING_IP4_LL_DEFAULT) {
+@@ -1602,31 +1607,45 @@ _prop_get_ipv4_link_local(NMDevice *self)
+                                                                  NM_CON_DEFAULT("ipv4.link-local"),
+                                                                  self,
+                                                                  NM_SETTING_IP4_LL_AUTO,
+-                                                                 NM_SETTING_IP4_LL_ENABLED,
++                                                                 NM_SETTING_IP4_LL_FALLBACK,
+                                                                  NM_SETTING_IP4_LL_DEFAULT);
+         if (link_local == NM_SETTING_IP4_LL_DEFAULT) {
+             /* If there is no global configuration for ipv4.link-local assume auto */
+             link_local = NM_SETTING_IP4_LL_AUTO;
+-        } else if (link_local == NM_SETTING_IP4_LL_ENABLED
+-                   && nm_streq(nm_setting_ip_config_get_method((NMSettingIPConfig *) s_ip4),
+-                               NM_SETTING_IP4_CONFIG_METHOD_DISABLED)) {
+-            /* ipv4.method=disabled has higher priority than the global ipv4.link-local=enabled */
++        } else if (NM_IN_SET(link_local, NM_SETTING_IP4_LL_ENABLED, NM_SETTING_IP4_LL_FALLBACK)
++                   && nm_streq(method, NM_SETTING_IP4_CONFIG_METHOD_DISABLED)) {
++            /* ipv4.method=disabled has higher priority than the global
++             * ipv4.link-local=enabled / ipv4.link-local=fallback */
+             link_local = NM_SETTING_IP4_LL_DISABLED;
+         } else if (link_local == NM_SETTING_IP4_LL_DISABLED
+-                   && nm_streq(nm_setting_ip_config_get_method((NMSettingIPConfig *) s_ip4),
+-                               NM_SETTING_IP4_CONFIG_METHOD_LINK_LOCAL)) {
++                   && nm_streq(method, NM_SETTING_IP4_CONFIG_METHOD_LINK_LOCAL)) {
+             /* ipv4.method=link-local has higher priority than the global ipv4.link-local=disabled */
+             link_local = NM_SETTING_IP4_LL_ENABLED;
+         }
+     }
+ 
+     if (link_local == NM_SETTING_IP4_LL_AUTO) {
+-        link_local = nm_streq(nm_setting_ip_config_get_method((NMSettingIPConfig *) s_ip4),
+-                              NM_SETTING_IP4_CONFIG_METHOD_LINK_LOCAL)
+-                         ? NM_SETTING_IP4_LL_ENABLED
+-                         : NM_SETTING_IP4_LL_DISABLED;
++        /* ipv4.link-local=auto means enabled for ipv4.method=link-local,
++         * and disabled for anything else */
++        if (nm_streq(method, NM_SETTING_IP4_CONFIG_METHOD_LINK_LOCAL)) {
++            link_local = NM_SETTING_IP4_LL_ENABLED;
++        } else {
++            link_local = NM_SETTING_IP4_LL_DISABLED;
++        }
++    }
++
++    if (link_local == NM_SETTING_IP4_LL_FALLBACK
++        && nm_streq(method, NM_SETTING_IP4_CONFIG_METHOD_LINK_LOCAL)) {
++        /* ipv4.link-local=fallback with ipv4.method=link-local will
++         * always be on anyway, simplify logic */
++        link_local = NM_SETTING_IP4_LL_ENABLED;
+     }
+ 
++    nm_assert(NM_IN_SET(link_local,
++                        NM_SETTING_IP4_LL_DISABLED,
++                        NM_SETTING_IP4_LL_ENABLED,
++                        NM_SETTING_IP4_LL_FALLBACK));
++
+     return link_local;
+ }
+ 
+@@ -4239,13 +4258,14 @@ _dev_l3_cfg_notify_cb(NML3Cfg *l3cfg, const NML3ConfigNotifyData *notify_data, N
+         const NML3ConfigData *l3cd;
+         NMDeviceState         state = nm_device_get_state(self);
+ 
++        l3cd = nm_l3cfg_get_combined_l3cd(l3cfg, TRUE);
+         if (state >= NM_DEVICE_STATE_IP_CONFIG && state < NM_DEVICE_STATE_DEACTIVATING) {
+             /* FIXME(l3cfg): MTU handling should be moved to l3cfg. */
+-            l3cd = nm_l3cfg_get_combined_l3cd(l3cfg, TRUE);
+             if (l3cd)
+                 priv->ip6_mtu = nm_l3_config_data_get_ip6_mtu(l3cd);
+             _commit_mtu(self);
+         }
++        _dev_ipll4_check_fallback(self, l3cd);
+         return;
+     }
+     case NM_L3_CONFIG_NOTIFY_TYPE_POST_COMMIT:
+@@ -10112,6 +10132,25 @@ _dev_ipll4_start(NMDevice *self)
+         nm_l3_ipv4ll_register_new(priv->ipll_data_4.v4.ipv4ll, timeout_msec);
+ }
+ 
++static void
++_dev_ipll4_check_fallback(NMDevice *self, const NML3ConfigData *l3cd_new)
++{
++    gboolean         has_non_ll;
++    NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE(self);
++
++    if (!l3cd_new || priv->ipll_data_4.v4.mode != NM_SETTING_IP4_LL_FALLBACK) {
++        return;
++    }
++
++    has_non_ll = nm_l3_config_data_get_flags(l3cd_new) & NM_L3_CONFIG_DAT_FLAGS_HAS_IPV4_NON_LL;
++    _LOGT_ipll(AF_INET, "%s fallback", has_non_ll ? "cleanup" : "start");
++    if (has_non_ll) {
++        _dev_ipllx_cleanup(self, AF_INET);
++    } else {
++        _dev_ipll4_start(self);
++    }
++}
++
+ /*****************************************************************************/
+ 
+ static const char *
+@@ -10476,7 +10515,18 @@ _dev_ipdhcpx_notify(NMDhcpClient *client, const NMDhcpClientNotifyData *notify_d
+     case NM_DHCP_CLIENT_NOTIFY_TYPE_LEASE_UPDATE:
+ 
+         if (!notify_data->lease_update.l3cd) {
++            const NML3ConfigData *dhcp_l3cd = priv->l3cds[L3_CONFIG_DATA_TYPE_DHCP_X(IS_IPv4)].d;
++
+             _LOGT_ipdhcp(addr_family, "lease lost");
++            _dev_ipdhcpx_set_state(self, addr_family, NM_DEVICE_IP_STATE_PENDING);
++            _dev_ip_state_check_async(self, addr_family);
++            if (dhcp_l3cd
++                && nm_l3cfg_remove_config(
++                    priv->l3cfg,
++                    _dev_l3_config_data_tag_get(priv, L3_CONFIG_DATA_TYPE_DHCP_X(IS_IPv4)),
++                    dhcp_l3cd)) {
++                _dev_l3_cfg_commit(self, FALSE);
++            }
+             goto lease_update_out;
+         }
+ 
+@@ -12114,7 +12164,8 @@ activate_stage3_ip_config_for_addr_family(NMDevice *self, int addr_family, const
+         goto out_devip;
+ 
+     if (IS_IPv4) {
+-        if (_prop_get_ipv4_link_local(self) == NM_SETTING_IP4_LL_ENABLED)
++        priv->ipll_data_4.v4.mode = _prop_get_ipv4_link_local(self);
++        if (priv->ipll_data_4.v4.mode == NM_SETTING_IP4_LL_ENABLED)
+             _dev_ipll4_start(self);
+ 
+         if (nm_streq(method, NM_SETTING_IP4_CONFIG_METHOD_AUTO))
+@@ -12838,8 +12889,11 @@ _cleanup_ip_pre(NMDevice *self, int addr_family, CleanupType cleanup_type, gbool
+ 
+     _dev_ipdhcpx_cleanup(self, addr_family, !preserve_dhcp || !keep_reapply, FALSE);
+ 
+-    if (!IS_IPv4)
++    if (IS_IPv4) {
++        priv->ipll_data_4.v4.mode = NM_SETTING_IP4_LL_DISABLED;
++    } else {
+         _dev_ipac6_cleanup(self);
++    }
+ 
+     _dev_ipllx_cleanup(self, addr_family);
+ 
+diff --git a/src/core/dhcp/nm-dhcp-client.c b/src/core/dhcp/nm-dhcp-client.c
+index b10ce41..4b409c3 100644
+--- a/src/core/dhcp/nm-dhcp-client.c
++++ b/src/core/dhcp/nm-dhcp-client.c
+@@ -891,6 +891,12 @@ _nm_dhcp_client_notify(NMDhcpClient         *self,
+ 
+     l3_cfg_notify_check_connected(self);
+ 
++    if (!priv->l3cd_curr) {
++        /* When the lease is lost, any cached ACD information is no longer relevant.
++         * Remove it so that it doesn't interfere with a new lease we might get. */
++        _acd_state_reset(self, TRUE, TRUE);
++    }
++
+     _emit_notify(self,
+                  NM_DHCP_CLIENT_NOTIFY_TYPE_LEASE_UPDATE,
+                  .lease_update = {
+diff --git a/src/core/nm-l3-config-data.c b/src/core/nm-l3-config-data.c
+index 96274ba..17679b3 100644
+--- a/src/core/nm-l3-config-data.c
++++ b/src/core/nm-l3-config-data.c
+@@ -368,7 +368,8 @@ nm_l3_config_data_log(const NML3ConfigData *self,
+     nm_assert(!NM_FLAGS_ANY(self->flags,
+                             ~(NM_L3_CONFIG_DAT_FLAGS_IGNORE_MERGE_NO_DEFAULT_ROUTES
+                               | NM_L3_CONFIG_DAT_FLAGS_HAS_DNS_PRIORITY_4
+-                              | NM_L3_CONFIG_DAT_FLAGS_HAS_DNS_PRIORITY_6)));
++                              | NM_L3_CONFIG_DAT_FLAGS_HAS_DNS_PRIORITY_6
++                              | NM_L3_CONFIG_DAT_FLAGS_HAS_IPV4_NON_LL)));
+ 
+     _L("l3cd %s%s%s(" NM_HASH_OBFUSCATE_PTR_FMT ", ifindex=%d%s%s%s%s)",
+        NM_PRINT_FMT_QUOTED(title, "\"", title, "\" ", ""),
+@@ -1283,15 +1284,26 @@ nm_l3_config_data_add_address_full(NML3ConfigData            *self,
+                                    const NMPObject          **out_obj_new)
+ {
+     const NMPObject *new;
+-    gboolean changed;
++    gboolean  changed;
++    const int IS_IPv4 = NM_IS_IPv4(addr_family);
+ 
+     nm_assert(_NM_IS_L3_CONFIG_DATA(self, FALSE));
+     nm_assert_addr_family(addr_family);
+     nm_assert((!pl_new) != (!obj_new));
+     nm_assert(!obj_new || NMP_OBJECT_GET_ADDR_FAMILY(obj_new) == addr_family);
+ 
++    if (IS_IPv4 && !NM_FLAGS_HAS(self->flags, NM_L3_CONFIG_DAT_FLAGS_HAS_IPV4_NON_LL)) {
++        const NMPlatformIP4Address *addr;
++        addr = obj_new ? NMP_OBJECT_CAST_IP4_ADDRESS(obj_new)
++                       : (const NMPlatformIP4Address *) (pl_new);
++
++        if (!nm_platform_ip4_address_is_link_local(addr)) {
++            self->flags |= NM_L3_CONFIG_DAT_FLAGS_HAS_IPV4_NON_LL;
++        }
++    }
++
+     changed = _l3_config_data_add_obj(self->multi_idx,
+-                                      &self->idx_addresses_x[NM_IS_IPv4(addr_family)],
++                                      &self->idx_addresses_x[IS_IPv4],
+                                       self->ifindex,
+                                       obj_new,
+                                       (const NMPlatformObject *) pl_new,
+@@ -2985,14 +2997,12 @@ _init_from_platform(NML3ConfigData           *self,
+         else
+             self->has_routes_with_type_local_6_set = FALSE;
+         nmp_cache_iter_for_each (&iter, head_entry, &plobj) {
+-            if (!_l3_config_data_add_obj(self->multi_idx,
+-                                         &self->idx_addresses_x[IS_IPv4],
+-                                         self->ifindex,
+-                                         plobj,
+-                                         NULL,
+-                                         NM_L3_CONFIG_ADD_FLAGS_APPEND_FORCE,
+-                                         NULL,
+-                                         NULL))
++            if (!nm_l3_config_data_add_address_full(self,
++                                                    addr_family,
++                                                    plobj,
++                                                    NULL,
++                                                    NM_L3_CONFIG_ADD_FLAGS_APPEND_FORCE,
++                                                    NULL))
+                 nm_assert_not_reached();
+         }
+         head_entry = nm_l3_config_data_lookup_addresses(self, addr_family);
+diff --git a/src/core/nm-l3-config-data.h b/src/core/nm-l3-config-data.h
+index 80abb00..8d0ee07 100644
+--- a/src/core/nm-l3-config-data.h
++++ b/src/core/nm-l3-config-data.h
+@@ -28,6 +28,7 @@ typedef enum {
+     ((is_ipv4) ? NM_L3_CONFIG_DAT_FLAGS_HAS_DNS_PRIORITY_4 \
+                : NM_L3_CONFIG_DAT_FLAGS_HAS_DNS_PRIORITY_6)
+ 
++    NM_L3_CONFIG_DAT_FLAGS_HAS_IPV4_NON_LL = (1ull << 3),
+ } NML3ConfigDatFlags;
+ 
+ typedef enum {
+diff --git a/src/libnm-core-impl/nm-setting-ip4-config.c b/src/libnm-core-impl/nm-setting-ip4-config.c
+index 8906254..6aa490b 100644
+--- a/src/libnm-core-impl/nm-setting-ip4-config.c
++++ b/src/libnm-core-impl/nm-setting-ip4-config.c
+@@ -243,7 +243,8 @@ verify(NMSetting *setting, NMConnection *connection, GError **error)
+                    NM_SETTING_IP4_LL_AUTO,
+                    NM_SETTING_IP4_LL_DEFAULT,
+                    NM_SETTING_IP4_LL_DISABLED,
+-                   NM_SETTING_IP4_LL_ENABLED)) {
++                   NM_SETTING_IP4_LL_ENABLED,
++                   NM_SETTING_IP4_LL_FALLBACK)) {
+         g_set_error(error,
+                     NM_CONNECTION_ERROR,
+                     NM_CONNECTION_ERROR_INVALID_PROPERTY,
+@@ -254,7 +255,7 @@ verify(NMSetting *setting, NMConnection *connection, GError **error)
+                        NM_SETTING_IP4_CONFIG_LINK_LOCAL);
+         return FALSE;
+     }
+-    if (priv->link_local == NM_SETTING_IP4_LL_ENABLED
++    if (NM_IN_SET(priv->link_local, NM_SETTING_IP4_LL_ENABLED, NM_SETTING_IP4_LL_FALLBACK)
+         && nm_streq(method, NM_SETTING_IP4_CONFIG_METHOD_DISABLED)) {
+         g_set_error_literal(error,
+                             NM_CONNECTION_ERROR,
+@@ -958,6 +959,8 @@ nm_setting_ip4_config_class_init(NMSettingIP4ConfigClass *klass)
+      * When set to "default", it honors the global connection default, before
+      * falling back to "auto". Note that if "ipv4.method" is "disabled", then
+      * link local addressing is always disabled too. The default is "default".
++     * Since 1.52, when set to "fallback", a link-local address is obtained
++     * if no other IPv4 address is set.
+      *
+      * Since: 1.40
+      */
+diff --git a/src/libnm-core-impl/tests/test-general.c b/src/libnm-core-impl/tests/test-general.c
+index d3ff202..f2c3ac6 100644
+--- a/src/libnm-core-impl/tests/test-general.c
++++ b/src/libnm-core-impl/tests/test-general.c
+@@ -5241,6 +5241,44 @@ test_setting_bond_changed_signal(void)
+     g_object_unref(connection);
+ }
+ 
++static void
++test_setting_ip4_link_local_fallback(void)
++{
++    gs_unref_object NMSetting *setting = nm_setting_ip4_config_new();
++    gs_free_error GError      *error   = NULL;
++
++    g_object_set(setting,
++                 NM_SETTING_IP_CONFIG_METHOD,
++                 NM_SETTING_IP4_CONFIG_METHOD_AUTO,
++                 NM_SETTING_IP4_CONFIG_LINK_LOCAL,
++                 NM_SETTING_IP4_LL_FALLBACK,
++                 NULL);
++    nmtst_assert_setting_verifies(setting);
++
++    g_object_set(setting,
++                 NM_SETTING_IP_CONFIG_METHOD,
++                 NM_SETTING_IP4_CONFIG_METHOD_LINK_LOCAL,
++                 NULL);
++    nmtst_assert_setting_verifies(setting);
++
++    g_object_set(setting,
++                 NM_SETTING_IP_CONFIG_METHOD,
++                 NM_SETTING_IP4_CONFIG_METHOD_DISABLED,
++                 NULL);
++    g_assert(!nm_setting_verify(setting, NULL, &error));
++    g_assert_error(error, NM_CONNECTION_ERROR, NM_CONNECTION_ERROR_INVALID_PROPERTY);
++    g_clear_error(&error);
++
++    g_object_set(setting,
++                 NM_SETTING_IP_CONFIG_METHOD,
++                 NM_SETTING_IP4_CONFIG_METHOD_AUTO,
++                 NM_SETTING_IP4_CONFIG_LINK_LOCAL,
++                 NM_SETTING_IP4_LL_FALLBACK + 1,
++                 NULL);
++    g_assert(!nm_setting_verify(setting, NULL, &error));
++    g_assert_error(error, NM_CONNECTION_ERROR, NM_CONNECTION_ERROR_INVALID_PROPERTY);
++}
++
+ static void
+ test_setting_ip4_changed_signal(void)
+ {
+@@ -11661,6 +11699,8 @@ main(int argc, char **argv)
+                     test_setting_connection_changed_signal);
+     g_test_add_func("/core/general/test_setting_bond_changed_signal",
+                     test_setting_bond_changed_signal);
++    g_test_add_func("/core/general/test_setting_ip4_link_local_fallback",
++                    test_setting_ip4_link_local_fallback);
+     g_test_add_func("/core/general/test_setting_ip4_changed_signal",
+                     test_setting_ip4_changed_signal);
+     g_test_add_func("/core/general/test_setting_ip6_changed_signal",
+diff --git a/src/libnm-core-public/nm-setting-ip4-config.h b/src/libnm-core-public/nm-setting-ip4-config.h
+index 323fe14..643b0c1 100644
+--- a/src/libnm-core-public/nm-setting-ip4-config.h
++++ b/src/libnm-core-public/nm-setting-ip4-config.h
+@@ -87,7 +87,9 @@ G_BEGIN_DECLS
+  *   "link-local".
+  * @NM_SETTING_IP4_LL_DISABLED: Disable IPv4 link-local protocol.
+  * @NM_SETTING_IP4_LL_ENABLED: Enable the IPv4 link-local protocol regardless what other protocols
+- * such as DHCP or manually assigned IP addresses might be active.
++ *   such as DHCP or manually assigned IP addresses might be active.
++ * @NM_SETTING_IP4_LL_FALLBACK: Since 1.52. This sets an IPv4 link-local address if no other IPv4
++ *   address is set, dynamically removing/re-adding it depending on DHCP leases.
+  *
+  * #NMSettingIP4LinkLocal values indicate whether IPv4 link-local address protocol should be enabled.
+  *
+@@ -98,6 +100,7 @@ typedef enum {
+     NM_SETTING_IP4_LL_AUTO     = 1,
+     NM_SETTING_IP4_LL_DISABLED = 2,
+     NM_SETTING_IP4_LL_ENABLED  = 3,
++    NM_SETTING_IP4_LL_FALLBACK = 4,
+ } NMSettingIP4LinkLocal;
+ 
+ typedef struct _NMSettingIP4ConfigClass NMSettingIP4ConfigClass;
+diff --git a/src/libnmc-setting/settings-docs.h.in b/src/libnmc-setting/settings-docs.h.in
+index 9f16a7f..b462a48 100644
+--- a/src/libnmc-setting/settings-docs.h.in
++++ b/src/libnmc-setting/settings-docs.h.in
+@@ -177,7 +177,7 @@
+ #define DESCRIBE_DOC_NM_SETTING_IP4_CONFIG_GATEWAY N_("The gateway associated with this configuration. This is only meaningful if \"addresses\" is also set. Setting the gateway causes NetworkManager to configure a standard default route with the gateway as next hop. This is ignored if \"never-default\" is set. An alternative is to configure the default route explicitly with a manual route and /0 as prefix length. Note that the gateway usually conflicts with routing that NetworkManager configures for WireGuard interfaces, so usually it should not be set in that case. See \"ip4-auto-default-route\".")
+ #define DESCRIBE_DOC_NM_SETTING_IP4_CONFIG_IGNORE_AUTO_DNS N_("When \"method\" is set to \"auto\" and this property to TRUE, automatically configured name servers and search domains are ignored and only name servers and search domains specified in the \"dns\" and \"dns-search\" properties, if any, are used.")
+ #define DESCRIBE_DOC_NM_SETTING_IP4_CONFIG_IGNORE_AUTO_ROUTES N_("When \"method\" is set to \"auto\" and this property to TRUE, automatically configured routes are ignored and only routes specified in the \"routes\" property, if any, are used.")
+-#define DESCRIBE_DOC_NM_SETTING_IP4_CONFIG_LINK_LOCAL N_("Enable and disable the IPv4 link-local configuration independently of the ipv4.method configuration. This allows a link-local address (169.254.x.y/16) to be obtained in addition to other addresses, such as those manually configured or obtained from a DHCP server. When set to \"auto\", the value is dependent on \"ipv4.method\". When set to \"default\", it honors the global connection default, before falling back to \"auto\". Note that if \"ipv4.method\" is \"disabled\", then link local addressing is always disabled too. The default is \"default\".")
++#define DESCRIBE_DOC_NM_SETTING_IP4_CONFIG_LINK_LOCAL N_("Enable and disable the IPv4 link-local configuration independently of the ipv4.method configuration. This allows a link-local address (169.254.x.y/16) to be obtained in addition to other addresses, such as those manually configured or obtained from a DHCP server. When set to \"auto\", the value is dependent on \"ipv4.method\". When set to \"default\", it honors the global connection default, before falling back to \"auto\". Note that if \"ipv4.method\" is \"disabled\", then link local addressing is always disabled too. The default is \"default\". Since 1.52, when set to \"fallback\", a link-local address is obtained if no other IPv4 address is set.")
+ #define DESCRIBE_DOC_NM_SETTING_IP4_CONFIG_MAY_FAIL N_("If TRUE, allow overall network configuration to proceed even if the configuration specified by this property times out.  Note that at least one IP configuration must succeed or overall network configuration will still fail.  For example, in IPv6-only networks, setting this property to TRUE on the NMSettingIP4Config allows the overall network configuration to succeed if IPv4 configuration fails but IPv6 configuration completes successfully.")
+ #define DESCRIBE_DOC_NM_SETTING_IP4_CONFIG_METHOD N_("The IPv4 connection method.")
+ #define DESCRIBE_DOC_NM_SETTING_IP4_CONFIG_NEVER_DEFAULT N_("If TRUE, this connection will never be the default connection for this IP type, meaning it will never be assigned the default route by NetworkManager.")
+diff --git a/src/nmcli/gen-metadata-nm-settings-nmcli.xml.in b/src/nmcli/gen-metadata-nm-settings-nmcli.xml.in
+index 720b257..0e8b42a 100644
+--- a/src/nmcli/gen-metadata-nm-settings-nmcli.xml.in
++++ b/src/nmcli/gen-metadata-nm-settings-nmcli.xml.in
+@@ -706,7 +706,7 @@
+         <property name="dhcp-vendor-class-identifier"
+                   description="The Vendor Class Identifier DHCP option (60). Special characters in the data string may be escaped using C-style escapes, nevertheless this property cannot contain nul bytes. If the per-profile value is unspecified (the default), a global connection default gets consulted. If still unspecified, the DHCP option is not sent to the server." />
+         <property name="link-local"
+-                  description="Enable and disable the IPv4 link-local configuration independently of the ipv4.method configuration. This allows a link-local address (169.254.x.y/16) to be obtained in addition to other addresses, such as those manually configured or obtained from a DHCP server. When set to &quot;auto&quot;, the value is dependent on &quot;ipv4.method&quot;. When set to &quot;default&quot;, it honors the global connection default, before falling back to &quot;auto&quot;. Note that if &quot;ipv4.method&quot; is &quot;disabled&quot;, then link local addressing is always disabled too. The default is &quot;default&quot;." />
++                  description="Enable and disable the IPv4 link-local configuration independently of the ipv4.method configuration. This allows a link-local address (169.254.x.y/16) to be obtained in addition to other addresses, such as those manually configured or obtained from a DHCP server. When set to &quot;auto&quot;, the value is dependent on &quot;ipv4.method&quot;. When set to &quot;default&quot;, it honors the global connection default, before falling back to &quot;auto&quot;. Note that if &quot;ipv4.method&quot; is &quot;disabled&quot;, then link local addressing is always disabled too. The default is &quot;default&quot;. Since 1.52, when set to &quot;fallback&quot;, a link-local address is obtained if no other IPv4 address is set." />
+         <property name="dhcp-reject-servers"
+                   description="Array of servers from which DHCP offers must be rejected. This property is useful to avoid getting a lease from misconfigured or rogue servers. For DHCPv4, each element must be an IPv4 address, optionally followed by a slash and a prefix length (e.g. &quot;192.168.122.0/24&quot;). This property is currently not implemented for DHCPv6." />
+         <property name="auto-route-ext-gw"

@@ -2,6 +2,7 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/${BPN}:"
 
 SRC_URI:append = " \
     file://dnsmasq-no-negcache.conf \
+    file://IPv4linklocal-fallback.patch \
 "
 
 EXTRA_OEMESON:append = " -Dmore_asserts=no"
