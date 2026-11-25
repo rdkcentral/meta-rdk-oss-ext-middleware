@@ -1,0 +1,34 @@
+Subject: [PATCH] device: do not add a route metric penalty on failed connectivity check
+
+NetworkManager adds 20000 to the default route metric of a device whose
+connectivity state is not FULL. The RDK networkmanager plugin owns the
+route preference between ethernet and wifi and changes the metric of
+the wlan0 connection at runtime, so the daemon must not add its own
+penalty on top.
+
+Return 0 from _dev_default_route_metric_penalty_get(). With a penalty of
+0 the l3cfg sees no change on a connectivity state update, so no
+needless commit is triggered.
+
+Upstream-Status: Inappropriate [RDK specific, route preference is owned by the networkmanager plugin]
+---
+ src/core/devices/nm-device.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/devices/nm-device.c b/src/core/devices/nm-device.c
+index ed840044c5..8aaeed9003 100644
+--- a/src/core/devices/nm-device.c
++++ b/src/core/devices/nm-device.c
+@@ -5244,9 +5244,11 @@ _dev_default_route_metric_penalty_get(NMDevice *self, int addr_family)
+     NMDevicePrivate *priv    = NM_DEVICE_GET_PRIVATE(self);
+     const int        IS_IPv4 = NM_IS_IPv4(addr_family);
+ 
++    /* RDK: no penalty. The networkmanager plugin owns the route preference
++     * between interfaces, so a connectivity state must not change the metric. */
+     if (priv->concheck_x[IS_IPv4].state != NM_CONNECTIVITY_FULL
+         && nm_connectivity_check_enabled(concheck_get_mgr(self)))
+-        return 20000;
++        return 0;
+ 
+     return 0;
+ }

@@ -2,6 +2,7 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/${BPN}:"
 
 SRC_URI:append = " \
     file://dnsmasq-no-negcache.conf \
+    file://NM_no_route_metric_penalty.patch \
 "
 
 EXTRA_OEMESON:append = " -Dmore_asserts=no"
